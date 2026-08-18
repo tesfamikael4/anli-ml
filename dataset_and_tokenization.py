@@ -151,11 +151,14 @@ if torch is not None:
 
 def load_anli_jsonl(filepath: Optional[str] = None) -> List[Dict[str, Any]]:
     """
-    Loads ANLI jsonl file (defaulting to 'all_in_one_cleaned.jsonl').
+    Loads ANLI jsonl file (supports base-dataset/train.jsonl or all_in_one_cleaned.jsonl).
     Parses premise, hypothesis, label, sub-domain, domain attributes.
     """
     candidate_paths = [
         filepath,
+        "base-dataset/train.jsonl",
+        "amharic_nli/base-dataset/train.jsonl",
+        "/base-dataset/train.jsonl",
         "all_in_one_cleaned.jsonl",
         "/all_in_one_cleaned.jsonl",
         "data/all_in_one_cleaned.jsonl",
@@ -179,3 +182,41 @@ def load_anli_jsonl(filepath: Optional[str] = None) -> List[Dict[str, Any]]:
                         item["sub-domain"] = item["sub_domain"]
                     data.append(item)
     return data
+
+
+def load_base_dataset_splits(base_dir: Optional[str] = None) -> Dict[str, List[Dict[str, Any]]]:
+    """
+    Loads pre-split dataset files (train.jsonl, validation.jsonl, test.jsonl)
+    directly from the base-dataset/ directory.
+    Returns dictionary with keys: 'train', 'validation', 'test'.
+    """
+    candidate_dirs = [
+        base_dir,
+        "base-dataset",
+        "amharic_nli/base-dataset",
+        "/base-dataset",
+        os.path.join(os.path.dirname(__file__), "base-dataset")
+    ]
+
+    selected_dir = None
+    for d in candidate_dirs:
+        if d and os.path.exists(d) and os.path.isdir(d):
+            selected_dir = d
+            break
+
+    splits = {"train": [], "validation": [], "test": []}
+
+    if selected_dir:
+        for split_name in ["train", "validation", "test"]:
+            file_path = os.path.join(selected_dir, f"{split_name}.jsonl")
+            if os.path.exists(file_path):
+                with open(file_path, "r", encoding="utf-8") as f:
+                    for line in f:
+                        if line.strip():
+                            item = json.loads(line)
+                            if "sub-domain" not in item and "sub_domain" in item:
+                                item["sub-domain"] = item["sub_domain"]
+                            splits[split_name].append(item)
+
+    return splits
+

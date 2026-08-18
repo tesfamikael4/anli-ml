@@ -47,7 +47,7 @@ CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 if CURRENT_DIR not in sys.path:
     sys.path.insert(0, CURRENT_DIR)
 
-from dataset_and_tokenization import load_anli_jsonl, AmharicSubwordTokenizer, LABEL_MAP
+from dataset_and_tokenization import load_anli_jsonl, load_base_dataset_splits, AmharicSubwordTokenizer, LABEL_MAP
 from evaluate_baselines import BaselineEvaluatorAndSignificance
 from inference_and_diagnostics import ANLIInferenceEngine
 from utils.logger import TrainingLogger
@@ -104,53 +104,54 @@ class AmharicNLISteppedPipeline:
         self.diagnostics_report_path = os.path.join(self.output_dir, "anli_error_diagnostics.json")
 
     # =========================================================================
-    # STEP 1: Dataset Validation, Splits & Subword Vocabulary Compilation
+    # STEP 1: Pre-Split Base Dataset Ingestion & Subword Vocabulary Compilation
     # =========================================================================
     def run_step_1_dataset_prep(self) -> Dict[str, Any]:
         print("\n" + "=" * 75)
-        print(">>> [STEP 1/5] DATASET INGESTION, MULTI-DOMAIN SPLITS & TOKENIZATION")
+        print(">>> [STEP 1/5] PRE-SPLIT BASE DATASET INGESTION & TOKENIZATION")
         print("=" * 75)
-        self.logger.logger.info("Executing Step 1: Dataset Verification & Tokenizer Preparation")
+        self.logger.logger.info("Executing Step 1: Pre-Split Base Dataset Ingestion (base-dataset/) & Tokenizer Prep")
 
-        dataset_file = self.dataset_path
-        if not os.path.exists(dataset_file):
-            parent_file = os.path.join(os.path.dirname(CURRENT_DIR), "all_in_one_cleaned.jsonl")
-            if os.path.exists(parent_file):
-                dataset_file = parent_file
+        base_splits = load_base_dataset_splits()
+        train_pairs = base_splits["train"]
+        val_pairs = base_splits["validation"]
+        test_pairs = base_splits["test"]
 
-        samples = load_anli_jsonl(dataset_file)
-        if not samples:
-            print(f"[WARNING] No samples loaded from {dataset_file}. Generating gold seed dataset...")
-            samples = [
-                {"premise": "ጠቅላይ ሚኒስትሩ አዲስ የኢኮኖሚ ማሻሻያ አዋጅ ይፋ አደረጉ።", "hypothesis": "የሀገሪቱ የኢኮኖሚ ፖሊሲ ላይ ለውጥ ተካሂዷል።", "label": "entailment", "domain": "News_and_Media"},
-                {"premise": "ትናንት ማታ በጣለው ከባድ ዝናብ ምክንያት መንገዶች በጎርፍ ተዘግተዋል።", "hypothesis": "ትናንት ማታ ምንም አይነት ዝናብ አልጣለም።", "label": "contradiction", "domain": "Social_Media"},
-                {"premise": "ሐኪሞች አዲሱን መድኃኒት ለታካሚዎች መስጠት ጀምረዋል።", "hypothesis": "መድኃኒቱ በውጭ ሀገር የተመረተ ነው።", "label": "neutral", "domain": "Healthcare"}
-            ]
+        all_samples = train_pairs + val_pairs + test_pairs
+        if not all_samples:
+            all_samples = load_anli_jsonl(self.dataset_path)
 
-        # Domain distribution
+        # Domain distribution & Label counts
         domain_counts: Dict[str, int] = {}
         label_counts: Dict[str, int] = {"entailment": 0, "contradiction": 0, "neutral": 0}
-        for s in samples:
+        for s in all_samples:
             d = s.get("domain", "General")
-            l = s.get("label", "neutral")
+            l = str(s.get("label", "neutral")).lower()
             domain_counts[d] = domain_counts.get(d, 0) + 1
             if l in label_counts:
                 label_counts[l] += 1
 
         tokenizer = AmharicSubwordTokenizer()
-        all_texts = [s["premise"] for s in samples] + [s["hypothesis"] for s in samples]
+        all_texts = [s["premise"] for s in all_samples] + [s["hypothesis"] for s in all_samples]
         tokenizer.build_vocab_from_texts(all_texts)
         with open(self.vocab_path, "w", encoding="utf-8") as f:
             json.dump(tokenizer.vocab, f, indent=2, ensure_ascii=False)
 
-        train_size = int(len(samples) * 0.80)
-        val_size = int(len(samples) * 0.10)
-        test_size = len(samples) - train_size - val_size
+        train_size = len(train_pairs)
+        val_size = len(val_pairs)
+        test_size = len(test_pairs)
+        total_size = len(all_samples)
 
         results = {
             "status": "success",
             "step": 1,
-            "total_benchmark_pairs": len(samples),
+            "dataset_directory": "base-dataset",
+            "pre_split_files": {
+                "train": "base-dataset/train.jsonl",
+                "validation": "base-dataset/validation.jsonl",
+                "test": "base-dataset/test.jsonl"
+            },
+            "total_benchmark_pairs": total_size,
             "train_pairs": train_size,
             "val_pairs": val_size,
             "test_pairs": test_size,
@@ -163,13 +164,17 @@ class AmharicNLISteppedPipeline:
             "vocab_artifact": self.vocab_path
         }
 
-        print(f" -> Total Pairs: {len(samples):,} (Train: {train_size:,} | Val: {val_size:,} | Test: {test_size:,})")
+        print(f" -> Base Dataset Directory: 'base-dataset/' (pre-split train.jsonl, validation.jsonl, test.jsonl)")
+        print(f" -> Ingested Pre-Split Dataset Total: {total_size:,} pairs")
+        print(f"    • Train Set: {train_size:,} pairs (base-dataset/train.jsonl)")
+        print(f"    • Validation Set: {val_size:,} pairs (base-dataset/validation.jsonl)")
+        print(f"    • Test Set: {test_size:,} pairs (base-dataset/test.jsonl)")
         print(f" -> Label Balance: Entailment: {label_counts['entailment']} | Contradiction: {label_counts['contradiction']} | Neutral: {label_counts['neutral']}")
         print(f" -> Domain Coverage: {len(domain_counts)} domains represented")
         print(f" -> Inter-Annotator Agreement: Cohen's κ = 0.913, Fleiss' κ = 0.913 (Almost Perfect)")
         print(f" -> Subword Vocabulary: {len(tokenizer.vocab)} tokens saved to {self.vocab_path}")
 
-        self.logger.log_metric(1, {"total_pairs": len(samples), "vocab_size": len(tokenizer.vocab)})
+        self.logger.log_metric(1, {"total_pairs": total_size, "vocab_size": len(tokenizer.vocab), "train_pairs": train_size, "val_pairs": val_size, "test_pairs": test_size})
         self.logger.log_artifact("subword_vocab", self.vocab_path)
         return results
 
